@@ -15,12 +15,12 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::{Deserialize, Serialize};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use winreg::enums::HKEY_CURRENT_USER;
-use winreg::RegKey;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsIconic, SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
 };
+use winreg::enums::HKEY_CURRENT_USER;
+use winreg::RegKey;
 
 const FEEDBACK_DURATION: Duration = Duration::from_secs(1);
 const MAX_LABEL_CHARS: usize = 80;
@@ -29,6 +29,7 @@ const AUTOSTART_NAME: &str = "SnippetManager";
 /// dass sie von Windows (und nicht manuell vom Nutzer) gestartet wurde.
 const AUTOSTART_ARG: &str = "--autostart";
 const TITLEBAR_HEIGHT: f32 = 24.0;
+const HANDLE_WIDTH: f32 = 24.0;
 
 // ---------------------------------------------------------------------------
 // Datenmodell
@@ -381,36 +382,47 @@ fn contrast_visuals(dark: bool) -> egui::Visuals {
 
     // (Panel, Fenster, Eingabefeld, Text, kräftiger Text, Rand, schwacher Rand,
     //  Button normal, Button hover, Button aktiv, Akzent)
-    let (panel, window, input, text, strong, border, soft_border, btn, btn_hover, btn_active, accent) =
-        if dark {
-            (
-                Color32::from_rgb(0x16, 0x18, 0x1D),
-                Color32::from_rgb(0x1F, 0x22, 0x29),
-                Color32::from_rgb(0x0C, 0x0E, 0x11),
-                Color32::from_rgb(0xE8, 0xEA, 0xEE),
-                Color32::WHITE,
-                Color32::from_rgb(0x8A, 0x93, 0xA6),
-                Color32::from_rgb(0x4A, 0x51, 0x60),
-                Color32::from_rgb(0x2A, 0x2F, 0x3A),
-                Color32::from_rgb(0x38, 0x3F, 0x4E),
-                Color32::from_rgb(0x48, 0x52, 0x66),
-                Color32::from_rgb(0x4C, 0x9A, 0xFF),
-            )
-        } else {
-            (
-                Color32::from_rgb(0xF4, 0xF5, 0xF7),
-                Color32::from_rgb(0xFF, 0xFF, 0xFF),
-                Color32::WHITE,
-                Color32::from_rgb(0x14, 0x17, 0x1E),
-                Color32::BLACK,
-                Color32::from_rgb(0x52, 0x5B, 0x6B),
-                Color32::from_rgb(0xA8, 0xB0, 0xBF),
-                Color32::from_rgb(0xE4, 0xE7, 0xED),
-                Color32::from_rgb(0xD2, 0xD8, 0xE3),
-                Color32::from_rgb(0xBC, 0xC5, 0xD6),
-                Color32::from_rgb(0x1A, 0x58, 0xCC),
-            )
-        };
+    let (
+        panel,
+        window,
+        input,
+        text,
+        strong,
+        border,
+        soft_border,
+        btn,
+        btn_hover,
+        btn_active,
+        accent,
+    ) = if dark {
+        (
+            Color32::from_rgb(0x16, 0x18, 0x1D),
+            Color32::from_rgb(0x1F, 0x22, 0x29),
+            Color32::from_rgb(0x0C, 0x0E, 0x11),
+            Color32::from_rgb(0xE8, 0xEA, 0xEE),
+            Color32::WHITE,
+            Color32::from_rgb(0x8A, 0x93, 0xA6),
+            Color32::from_rgb(0x4A, 0x51, 0x60),
+            Color32::from_rgb(0x2A, 0x2F, 0x3A),
+            Color32::from_rgb(0x38, 0x3F, 0x4E),
+            Color32::from_rgb(0x48, 0x52, 0x66),
+            Color32::from_rgb(0x4C, 0x9A, 0xFF),
+        )
+    } else {
+        (
+            Color32::from_rgb(0xF4, 0xF5, 0xF7),
+            Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            Color32::WHITE,
+            Color32::from_rgb(0x14, 0x17, 0x1E),
+            Color32::BLACK,
+            Color32::from_rgb(0x52, 0x5B, 0x6B),
+            Color32::from_rgb(0xA8, 0xB0, 0xBF),
+            Color32::from_rgb(0xE4, 0xE7, 0xED),
+            Color32::from_rgb(0xD2, 0xD8, 0xE3),
+            Color32::from_rgb(0xBC, 0xC5, 0xD6),
+            Color32::from_rgb(0x1A, 0x58, 0xCC),
+        )
+    };
 
     v.panel_fill = panel;
     v.window_fill = window;
@@ -499,22 +511,22 @@ fn title_button(ui: &mut egui::Ui, close: bool) -> egui::Response {
     resp.on_hover_text(if close { "Schließen" } else { "Minimieren" })
 }
 
-/// Kleiner Hoch/Runter-Pfeil (Dreieck) für die Reihenfolge.
-fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 24.0), sense);
+/// Drag-Handle (drei waagerechte Striche, "☰") zum Verschieben per Maus.
+/// Wird gezeichnet statt als Zeichen ausgegeben, damit es keine Schriftart braucht.
+fn drag_handle(ui: &mut egui::Ui, dragging: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(HANDLE_WIDTH, 28.0),
+        egui::Sense::click_and_drag(),
+    );
     let v = ui.visuals();
-    let (fill, stroke, color) = if !enabled {
+    let active = resp.hovered() || dragging;
+    let (fill, stroke, color) = if dragging {
         (
-            egui::Color32::TRANSPARENT,
-            egui::Stroke::NONE,
-            v.weak_text_color(),
+            v.widgets.active.bg_fill,
+            v.widgets.active.bg_stroke,
+            v.widgets.active.fg_stroke.color,
         )
-    } else if resp.hovered() {
+    } else if active {
         (
             v.widgets.hovered.bg_fill,
             v.widgets.hovered.bg_stroke,
@@ -529,23 +541,15 @@ fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
     };
 
     let painter = ui.painter();
-    painter.rect(rect.shrink2(egui::vec2(1.0, 2.0)), 3.0, fill, stroke);
+    painter.rect(rect, 3.0, fill, stroke);
     let c = rect.center();
-    let pts = if up {
-        vec![
-            c + egui::vec2(0.0, -4.0),
-            c + egui::vec2(5.0, 3.0),
-            c + egui::vec2(-5.0, 3.0),
-        ]
-    } else {
-        vec![
-            c + egui::vec2(0.0, 4.0),
-            c + egui::vec2(5.0, -3.0),
-            c + egui::vec2(-5.0, -3.0),
-        ]
-    };
-    painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
-    resp
+    for dy in [-5.0_f32, 0.0, 5.0] {
+        painter.line_segment(
+            [c + egui::vec2(-6.0, dy), c + egui::vec2(6.0, dy)],
+            egui::Stroke::new(1.8, color),
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::Grab)
 }
 
 // ---------------------------------------------------------------------------
@@ -630,10 +634,286 @@ fn weekday_de(w: Weekday) -> &'static str {
 // App
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Taschenrechner
+//
+// Arbeitet wie ein einfacher Standard-Taschenrechner: Jede Rechenart wird sofort
+// ausgeführt, sobald die nächste Operation oder "=" gedrückt wird (2 + 3 × 4 = 20).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum CalcKey {
+    Digit(char),
+    Dot,
+    Op(char),
+    Equals,
+    Clear,
+    Back,
+    Negate,
+}
+
+impl CalcKey {
+    fn label(self) -> String {
+        match self {
+            CalcKey::Digit(c) => c.to_string(),
+            CalcKey::Dot => ",".to_string(),
+            CalcKey::Op(c) => op_symbol(c).to_string(),
+            CalcKey::Equals => "=".to_string(),
+            CalcKey::Clear => "C".to_string(),
+            CalcKey::Back => "Entf".to_string(),
+            CalcKey::Negate => "±".to_string(),
+        }
+    }
+}
+
+/// Obere vier Reihen des Tastenfelds (die letzte Reihe "0 , =" wird gesondert gebaut).
+const CALC_ROWS: [[CalcKey; 4]; 4] = [
+    [
+        CalcKey::Clear,
+        CalcKey::Back,
+        CalcKey::Negate,
+        CalcKey::Op('/'),
+    ],
+    [
+        CalcKey::Digit('7'),
+        CalcKey::Digit('8'),
+        CalcKey::Digit('9'),
+        CalcKey::Op('*'),
+    ],
+    [
+        CalcKey::Digit('4'),
+        CalcKey::Digit('5'),
+        CalcKey::Digit('6'),
+        CalcKey::Op('-'),
+    ],
+    [
+        CalcKey::Digit('1'),
+        CalcKey::Digit('2'),
+        CalcKey::Digit('3'),
+        CalcKey::Op('+'),
+    ],
+];
+
+const MAX_DIGITS: usize = 15;
+
+fn op_symbol(op: char) -> char {
+    match op {
+        '*' => '×',
+        '/' => '÷',
+        other => other,
+    }
+}
+
+/// Zahl für die Anzeige: bis zu 10 Nachkommastellen, ohne überflüssige Nullen,
+/// mit Komma. (0,1 + 0,2 ergibt so sauber "0,3".)
+fn fmt_number(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let a = v.abs();
+    let text = if !(1e-9..1e15).contains(&a) {
+        format!("{v:e}")
+    } else {
+        let mut t = format!("{v:.10}");
+        while t.ends_with('0') {
+            t.pop();
+        }
+        if t.ends_with('.') {
+            t.pop();
+        }
+        t
+    };
+    text.replace('.', ",")
+}
+
+struct Calculator {
+    /// Aktuelle Eingabe bzw. letztes Ergebnis (mit Komma als Dezimaltrenner).
+    display: String,
+    /// Linker Operand, solange eine Rechenart aussteht.
+    acc: Option<f64>,
+    op: Option<char>,
+    /// `true`: Die nächste Ziffer beginnt eine neue Zahl.
+    fresh: bool,
+    error: bool,
+}
+
+impl Calculator {
+    fn new() -> Self {
+        Self {
+            display: "0".to_string(),
+            acc: None,
+            op: None,
+            fresh: false,
+            error: false,
+        }
+    }
+
+    fn value(&self) -> f64 {
+        self.display.replace(',', ".").parse().unwrap_or(0.0)
+    }
+
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
+
+    fn fail(&mut self) {
+        self.display = "Fehler".to_string();
+        self.acc = None;
+        self.op = None;
+        self.fresh = true;
+        self.error = true;
+    }
+
+    fn digit(&mut self, d: char) {
+        if self.error {
+            self.clear();
+        }
+        if self.fresh {
+            self.display = "0".to_string();
+            self.fresh = false;
+        }
+        let digits = self.display.chars().filter(|c| c.is_ascii_digit()).count();
+        if digits >= MAX_DIGITS {
+            return;
+        }
+        match self.display.as_str() {
+            "0" => self.display = d.to_string(),
+            "-0" => self.display = format!("-{d}"),
+            _ => self.display.push(d),
+        }
+    }
+
+    fn dot(&mut self) {
+        if self.error {
+            self.clear();
+        }
+        if self.fresh {
+            self.display = "0".to_string();
+            self.fresh = false;
+        }
+        if !self.display.contains(',') {
+            self.display.push(',');
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.error {
+            self.clear();
+            return;
+        }
+        if self.fresh {
+            return;
+        }
+        self.display.pop();
+        if self.display.is_empty() || self.display == "-" {
+            self.display = "0".to_string();
+        }
+    }
+
+    fn negate(&mut self) {
+        if self.error || self.display == "0" {
+            return;
+        }
+        if self.display.starts_with('-') {
+            self.display.remove(0);
+        } else {
+            self.display.insert(0, '-');
+        }
+    }
+
+    /// Rechnet "acc op anzeige" aus (falls eine Rechenart aussteht).
+    fn evaluate(&mut self) {
+        if let (Some(a), Some(op)) = (self.acc, self.op) {
+            let b = self.value();
+            let result = match op {
+                '+' => a + b,
+                '-' => a - b,
+                '*' => a * b,
+                '/' => {
+                    if b == 0.0 {
+                        self.fail();
+                        return;
+                    }
+                    a / b
+                }
+                _ => b,
+            };
+            if !result.is_finite() {
+                self.fail();
+                return;
+            }
+            self.display = fmt_number(result);
+            self.acc = None;
+            self.op = None;
+        }
+        self.fresh = true;
+    }
+
+    fn operator(&mut self, op: char) {
+        if self.error {
+            return;
+        }
+        // Bei Kettenrechnung (2 + 3 +) wird sofort zwischengerechnet.
+        // Wird nur die Rechenart gewechselt (fresh), bleibt der Operand erhalten.
+        if self.op.is_some() && !self.fresh {
+            self.evaluate();
+            if self.error {
+                return;
+            }
+        }
+        self.acc = Some(self.value());
+        self.op = Some(op);
+        self.fresh = true;
+    }
+
+    fn press(&mut self, key: CalcKey) {
+        match key {
+            CalcKey::Digit(d) => self.digit(d),
+            CalcKey::Dot => self.dot(),
+            CalcKey::Op(o) => self.operator(o),
+            CalcKey::Equals => self.evaluate(),
+            CalcKey::Clear => self.clear(),
+            CalcKey::Back => self.backspace(),
+            CalcKey::Negate => self.negate(),
+        }
+    }
+
+    /// Eingabe über die Tastatur (Zeichen aus `Event::Text`).
+    fn press_char(&mut self, c: char) {
+        match c {
+            '0'..='9' => self.digit(c),
+            ',' | '.' => self.dot(),
+            '+' | '-' | '*' | '/' => self.operator(c),
+            '=' => self.evaluate(),
+            _ => {}
+        }
+    }
+}
+
+/// Eine Taste des Rechners zeichnen. Gibt `true` zurück, wenn sie geklickt wurde.
+fn calc_button(
+    ui: &mut egui::Ui,
+    key: CalcKey,
+    size: egui::Vec2,
+    op_fill: egui::Color32,
+    accent: egui::Color32,
+) -> bool {
+    let text = egui::RichText::new(key.label()).size(16.0);
+    let button = match key {
+        CalcKey::Equals => {
+            egui::Button::new(text.color(egui::Color32::WHITE).strong()).fill(accent)
+        }
+        CalcKey::Digit(_) | CalcKey::Dot => egui::Button::new(text),
+        _ => egui::Button::new(text).fill(op_fill),
+    };
+    ui.add_sized(size, button).clicked()
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Snippets,
     Clock,
+    Calculator,
     Settings,
 }
 
@@ -652,8 +932,8 @@ struct SnippetApp {
     path: PathBuf,
     tab: Tab,
     editing: Option<EditState>,
-    /// Zeigt Hoch/Runter-Pfeile an Snippets und Gruppen.
-    reorder_mode: bool,
+    /// Laufender Drag-Vorgang: (Gruppenname, Position des gezogenen Snippets in der Gruppe).
+    drag: Option<(String, usize)>,
     /// Eingeklappte Gruppen (nur während der Laufzeit, nicht gespeichert).
     collapsed: HashSet<String>,
     clipboard: Option<Clipboard>,
@@ -664,6 +944,7 @@ struct SnippetApp {
     status: Option<String>,
     countdown: Countdown,
     stopwatch: Stopwatch,
+    calc: Calculator,
     /// `true`, wenn Tray-Icon UND Fenster-Handle verfügbar sind. Nur dann darf
     /// das Fenster versteckt werden (sonst wäre die App nicht mehr erreichbar).
     has_tray: bool,
@@ -711,7 +992,7 @@ impl SnippetApp {
             path,
             tab: Tab::Snippets,
             editing: None,
-            reorder_mode: false,
+            drag: None,
             collapsed: HashSet::new(),
             clipboard: Clipboard::new().ok(),
             copied: None,
@@ -721,6 +1002,7 @@ impl SnippetApp {
             status,
             countdown: Countdown::new(),
             stopwatch: Stopwatch::default(),
+            calc: Calculator::new(),
             has_tray: tray_ok,
         }
     }
@@ -746,43 +1028,30 @@ impl SnippetApp {
         out
     }
 
-    /// Tauscht zwei Snippets der gleichen Gruppe.
-    fn swap_snippets(&mut self, a: usize, b: usize) {
-        if a < self.cfg.snippets.len() && b < self.cfg.snippets.len() {
-            self.cfg.snippets.swap(a, b);
-            self.copied = None;
-            self.editing = None;
-            self.save();
+    /// Verschiebt ein Snippet innerhalb seiner Gruppe und speichert sofort.
+    ///
+    /// `idxs`: Positionen der Gruppe im Gesamt-Vektor, `from_pos`: Position des
+    /// gezogenen Snippets in dieser Liste, `slot`: Einfügemarke (0 = vor dem ersten,
+    /// `idxs.len()` = hinter dem letzten Eintrag). Die belegten Plätze im Vektor
+    /// bleiben dieselben, nur die Snippets der Gruppe tauschen ihre Reihenfolge –
+    /// Snippets anderer Gruppen werden nicht angefasst.
+    fn reorder_in_group(&mut self, idxs: &[usize], from_pos: usize, slot: usize) {
+        if from_pos >= idxs.len() || slot > idxs.len() {
+            return;
         }
-    }
-
-    /// Verschiebt eine ganze Gruppe um eine Position nach oben/unten.
-    fn move_group(&mut self, group_pos: usize, up: bool) {
-        let mut groups = self.grouped();
-        let target = if up {
-            if group_pos == 0 {
-                return;
-            }
-            group_pos - 1
-        } else {
-            if group_pos + 1 >= groups.len() {
-                return;
-            }
-            group_pos + 1
-        };
-        groups.swap(group_pos, target);
-
-        let old = std::mem::take(&mut self.cfg.snippets);
-        let mut reordered = Vec::with_capacity(old.len());
-        for (_, idxs) in &groups {
-            for &i in idxs {
-                reordered.push(old[i].clone());
-            }
+        let to_pos = if slot > from_pos { slot - 1 } else { slot };
+        if to_pos == from_pos {
+            return;
         }
-        self.cfg.snippets = reordered;
+        let mut items: Vec<Snippet> = idxs.iter().map(|&i| self.cfg.snippets[i].clone()).collect();
+        let moved = items.remove(from_pos);
+        items.insert(to_pos, moved);
+        for (&vec_index, snippet) in idxs.iter().zip(items) {
+            self.cfg.snippets[vec_index] = snippet;
+        }
         self.copied = None;
         self.editing = None;
-        self.save();
+        self.save(); // Reihenfolge sofort in die config.json schreiben
     }
 
     fn delete_snippet(&mut self, index: usize) {
@@ -885,13 +1154,11 @@ impl SnippetApp {
     // ----- Tab: Snippets ----------------------------------------------------
 
     fn ui_snippets(&mut self, ui: &mut egui::Ui) {
-        // --- Kopfzeile: nur "Neu" + Reihenfolge-Schalter ---
+        // --- Kopfzeile: nur der Button "Neu" ---
         ui.horizontal_wrapped(|ui| {
             if ui.button("Neu").clicked() {
                 self.start_new(String::new());
             }
-            ui.toggle_value(&mut self.reorder_mode, "Reihenfolge ändern")
-                .on_hover_text("Zeigt Hoch/Runter-Pfeile an Snippets und Gruppen");
         });
         ui.add_space(4.0);
         ui.separator();
@@ -914,60 +1181,52 @@ impl SnippetApp {
         } else {
             egui::Color32::from_rgb(190, 30, 30)
         };
+        let accent = ui.visuals().selection.bg_fill;
 
         let groups = self.grouped();
-        let group_count = groups.len();
         // Bei nur einer unbenannten Gruppe keine Überschrift anzeigen.
-        let show_headers = !(group_count == 1 && groups[0].0.is_empty());
-        let reorder = self.reorder_mode;
+        let show_headers = !(groups.len() == 1 && groups[0].0.is_empty());
         let copied = self.copied.filter(|(_, t)| t.elapsed() < FEEDBACK_DURATION);
+        let drag = self.drag.clone();
+        let pointer_y = ui.input(|i| i.pointer.latest_pos()).map(|p| p.y);
 
         let mut to_copy: Option<usize> = None;
         let mut to_edit: Option<usize> = None;
         let mut to_delete: Option<usize> = None;
-        let mut to_swap: Option<(usize, usize)> = None;
-        let mut group_move: Option<(usize, bool)> = None;
         let mut toggle_group: Option<String> = None;
         let mut new_in_group: Option<String> = None;
+        let mut drag_start: Option<(String, usize)> = None;
+        let mut drag_released = false;
+        let mut drop_slot: Option<usize> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (gi, (gname, idxs)) in groups.iter().enumerate() {
+                for (gname, idxs) in groups.iter() {
                     let collapsed = show_headers && self.collapsed.contains(gname);
 
                     if show_headers {
-                        ui.horizontal(|ui| {
-                            if reorder {
-                                if arrow_button(ui, true, gi > 0).clicked() {
-                                    group_move = Some((gi, true));
-                                }
-                                if arrow_button(ui, false, gi + 1 < group_count).clicked() {
-                                    group_move = Some((gi, false));
-                                }
+                        let sign = if collapsed { "+" } else { "−" };
+                        let title = egui::RichText::new(format!(
+                            "{sign}  {} ({})",
+                            group_label(gname),
+                            idxs.len()
+                        ))
+                        .strong();
+                        let resp = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::Button::new(title)
+                                .fill(ui.visuals().widgets.noninteractive.bg_stroke.color)
+                                .stroke(ui.visuals().widgets.inactive.bg_stroke),
+                        );
+                        if resp.clicked() {
+                            toggle_group = Some(gname.clone());
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Neues Snippet in dieser Gruppe").clicked() {
+                                new_in_group = Some(gname.clone());
+                                ui.close_menu();
                             }
-                            let sign = if collapsed { "+" } else { "−" };
-                            let title = egui::RichText::new(format!(
-                                "{sign}  {} ({})",
-                                group_label(gname),
-                                idxs.len()
-                            ))
-                            .strong();
-                            let resp = ui.add_sized(
-                                [ui.available_width(), 26.0],
-                                egui::Button::new(title)
-                                    .fill(ui.visuals().widgets.noninteractive.bg_stroke.color)
-                                    .stroke(ui.visuals().widgets.inactive.bg_stroke),
-                            );
-                            if resp.clicked() {
-                                toggle_group = Some(gname.clone());
-                            }
-                            resp.context_menu(|ui| {
-                                if ui.button("Neues Snippet in dieser Gruppe").clicked() {
-                                    new_in_group = Some(gname.clone());
-                                    ui.close_menu();
-                                }
-                            });
                         });
                     }
 
@@ -976,74 +1235,126 @@ impl SnippetApp {
                     }
 
                     for (p, &i) in idxs.iter().enumerate() {
-                        ui.push_id(i, |ui| {
-                            ui.horizontal(|ui| {
-                                if reorder {
-                                    if arrow_button(ui, true, p > 0).clicked() {
-                                        to_swap = Some((i, idxs[p - 1]));
+                        let rect = ui
+                            .push_id(i, |ui| {
+                                ui.horizontal(|ui| {
+                                    if show_headers {
+                                        ui.add_space(10.0);
                                     }
-                                    if arrow_button(ui, false, p + 1 < idxs.len()).clicked() {
-                                        to_swap = Some((i, idxs[p + 1]));
-                                    }
-                                } else if show_headers {
-                                    ui.add_space(10.0);
-                                }
+                                    let spacing = ui.spacing().item_spacing.x;
+                                    let button_width =
+                                        (ui.available_width() - HANDLE_WIDTH - spacing).max(20.0);
 
-                                let is_copied = matches!(copied, Some((idx, _)) if idx == i);
-                                let label = if is_copied {
-                                    egui::RichText::new("Kopiert!").color(ok_color).strong()
-                                } else {
-                                    egui::RichText::new(shorten(
-                                        &self.cfg.snippets[i].description,
-                                        MAX_LABEL_CHARS,
-                                    ))
-                                };
+                                    let is_copied = matches!(copied, Some((idx, _)) if idx == i);
+                                    let label = if is_copied {
+                                        egui::RichText::new("Kopiert!").color(ok_color).strong()
+                                    } else {
+                                        egui::RichText::new(shorten(
+                                            &self.cfg.snippets[i].description,
+                                            MAX_LABEL_CHARS,
+                                        ))
+                                    };
 
-                                let response = ui
-                                    .add_sized(
-                                        [ui.available_width(), 28.0],
-                                        egui::Button::new(label),
-                                    )
-                                    .on_hover_text("Linksklick: kopieren · Rechtsklick: Menü");
-
-                                if response.clicked() {
-                                    to_copy = Some(i);
-                                }
-
-                                response.context_menu(|ui| {
-                                    if ui.button("Kopieren").clicked() {
+                                    let response = ui
+                                        .add_sized([button_width, 28.0], egui::Button::new(label))
+                                        .on_hover_text("Linksklick: kopieren · Rechtsklick: Menü");
+                                    if response.clicked() {
                                         to_copy = Some(i);
-                                        ui.close_menu();
                                     }
-                                    if ui.button("Bearbeiten").clicked() {
-                                        to_edit = Some(i);
-                                        ui.close_menu();
+                                    response.context_menu(|ui| {
+                                        if ui.button("Kopieren").clicked() {
+                                            to_copy = Some(i);
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Bearbeiten").clicked() {
+                                            to_edit = Some(i);
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        let delete_label =
+                                            egui::RichText::new("Löschen").color(delete_color);
+                                        if ui.button(delete_label).clicked() {
+                                            to_delete = Some(i);
+                                            ui.close_menu();
+                                        }
+                                    });
+
+                                    // Drag-Handle ganz rechts.
+                                    let is_dragged = matches!(
+                                        &drag,
+                                        Some((g, from)) if g == gname && *from == p
+                                    );
+                                    let handle = drag_handle(ui, is_dragged);
+                                    if handle.drag_started() {
+                                        drag_start = Some((gname.clone(), p));
                                     }
-                                    ui.separator();
-                                    let delete_label =
-                                        egui::RichText::new("Löschen").color(delete_color);
-                                    if ui.button(delete_label).clicked() {
-                                        to_delete = Some(i);
-                                        ui.close_menu();
+                                    if handle.drag_stopped() {
+                                        drag_released = true;
                                     }
-                                });
-                            });
-                        });
+                                })
+                                .response
+                                .rect
+                            })
+                            .inner;
+
+                        // Während des Ziehens: Quelle abdunkeln, Einfügemarke zeigen.
+                        if let (Some((dg, from)), Some(py)) = (&drag, pointer_y) {
+                            if dg == gname {
+                                if *from == p {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        3.0,
+                                        accent.linear_multiply(0.35),
+                                    );
+                                }
+                                let half = ui.spacing().item_spacing.y / 2.0;
+                                let top = rect.top() - half;
+                                let bottom = rect.bottom() + half;
+                                let first = p == 0;
+                                let last = p + 1 == idxs.len();
+                                if (py >= top && py < bottom)
+                                    || (first && py < top)
+                                    || (last && py >= bottom)
+                                {
+                                    let before = py < rect.center().y;
+                                    drop_slot = Some(if before { p } else { p + 1 });
+                                    let y = if before { top } else { bottom };
+                                    ui.painter().line_segment(
+                                        [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                                        egui::Stroke::new(2.5, accent),
+                                    );
+                                }
+                            }
+                        }
                     }
                     ui.add_space(4.0);
                 }
             });
+
+        // --- Drag beendet: neue Reihenfolge übernehmen und speichern ---
+        if drag_released {
+            if let (Some((g, from)), Some(slot)) = (drag.as_ref(), drop_slot) {
+                if let Some((_, idxs)) = groups.iter().find(|(n, _)| n == g) {
+                    self.reorder_in_group(idxs, *from, slot);
+                }
+            }
+            self.drag = None;
+        } else if let Some(start) = drag_start {
+            self.drag = Some(start);
+        } else if self.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
+            // Sicherheitsnetz: Maustaste ist oben, aber kein Release-Ereignis angekommen.
+            self.drag = None;
+        }
+        if self.drag.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
 
         if let Some(g) = toggle_group {
             if !self.collapsed.remove(&g) {
                 self.collapsed.insert(g);
             }
         }
-        if let Some((pos, up)) = group_move {
-            self.move_group(pos, up);
-        } else if let Some((a, b)) = to_swap {
-            self.swap_snippets(a, b);
-        } else if let Some(g) = new_in_group {
+        if let Some(g) = new_in_group {
             self.start_new(g);
         } else if let Some(i) = to_delete {
             self.delete_snippet(i);
@@ -1136,8 +1447,7 @@ impl SnippetApp {
                 });
 
                 ui.add_space(6.0);
-                let valid =
-                    !edit.description.trim().is_empty() && !edit.content.trim().is_empty();
+                let valid = !edit.description.trim().is_empty() && !edit.content.trim().is_empty();
                 ui.horizontal_wrapped(|ui| {
                     let label = if edit.index.is_some() {
                         "Speichern"
@@ -1423,6 +1733,115 @@ impl SnippetApp {
             });
     }
 
+    // ----- Tab: Taschenrechner ----------------------------------------------
+
+    fn handle_calc_keys(&mut self, ctx: &egui::Context) {
+        let events = ctx.input(|i| i.events.clone());
+        for event in events {
+            match event {
+                egui::Event::Text(text) => {
+                    for c in text.chars() {
+                        self.calc.press_char(c);
+                    }
+                }
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat,
+                    ..
+                } => match key {
+                    egui::Key::Enter if !repeat => self.calc.press(CalcKey::Equals),
+                    egui::Key::Backspace => self.calc.press(CalcKey::Back),
+                    egui::Key::Escape | egui::Key::Delete => self.calc.press(CalcKey::Clear),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn ui_calculator(&mut self, ui: &mut egui::Ui) {
+        let expr = match (self.calc.acc, self.calc.op) {
+            (Some(a), Some(op)) => format!("{} {}", fmt_number(a), op_symbol(op)),
+            _ => String::new(),
+        };
+        let display = self.calc.display.clone();
+        let accent = ui.visuals().selection.bg_fill;
+        let op_fill = ui.visuals().widgets.active.bg_fill;
+        let mut pressed: Option<CalcKey> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let avail = ui.available_width();
+                let sp = 6.0;
+
+                // --- Anzeige: Rechenzeile + aktuelle Eingabe/Ergebnis ---
+                egui::Frame::none()
+                    .fill(ui.visuals().extreme_bg_color)
+                    .stroke(ui.visuals().widgets.inactive.bg_stroke)
+                    .rounding(4.0)
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.set_width((avail - 18.0).max(10.0));
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                            let line = if expr.is_empty() { " " } else { expr.as_str() };
+                            ui.label(egui::RichText::new(line).small().weak());
+                            let len = display.chars().count().max(1) as f32;
+                            let size = (avail / 9.0)
+                                .clamp(18.0, 34.0)
+                                .min((avail - 24.0) / (0.62 * len))
+                                .max(11.0);
+                            ui.label(
+                                egui::RichText::new(&display)
+                                    .size(size)
+                                    .monospace()
+                                    .strong(),
+                            );
+                        });
+                    });
+                ui.add_space(sp);
+
+                // --- Tastenfeld ---
+                let cw = ((avail - 3.0 * sp) / 4.0).clamp(28.0, 80.0);
+                let ch = (cw * 0.7).clamp(30.0, 46.0);
+                let size = egui::vec2(cw, ch);
+
+                egui::Grid::new("calc_grid")
+                    .spacing([sp, sp])
+                    .show(ui, |ui| {
+                        for row in CALC_ROWS {
+                            for key in row {
+                                if calc_button(ui, key, size, op_fill, accent) {
+                                    pressed = Some(key);
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(sp);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = sp;
+                    for key in [CalcKey::Digit('0'), CalcKey::Dot] {
+                        if calc_button(ui, key, size, op_fill, accent) {
+                            pressed = Some(key);
+                        }
+                    }
+                    let wide = egui::vec2(2.0 * cw + sp, ch);
+                    if calc_button(ui, CalcKey::Equals, wide, op_fill, accent) {
+                        pressed = Some(CalcKey::Equals);
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.weak("Tastatur: Ziffern, + - * /, Enter = Ergebnis, Rücktaste, Esc = C");
+            });
+
+        if let Some(key) = pressed {
+            self.calc.press(key);
+        }
+    }
+
     // ----- Tab: Einstellungen -----------------------------------------------
 
     fn ui_settings(&mut self, ui: &mut egui::Ui) {
@@ -1576,6 +1995,15 @@ impl eframe::App for SnippetApp {
 
         self.tick_timers(ctx);
 
+        // Tastatureingabe für den Taschenrechner (nur wenn kein Textfeld/Dialog aktiv ist).
+        if self.tab == Tab::Calculator
+            && self.editing.is_none()
+            && !self.show_close_dialog
+            && !ctx.wants_keyboard_input()
+        {
+            self.handle_calc_keys(ctx);
+        }
+
         self.ui_titlebar(ctx);
 
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
@@ -1583,6 +2011,7 @@ impl eframe::App for SnippetApp {
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Snippets, "Snippets");
                 ui.selectable_value(&mut self.tab, Tab::Clock, "Uhr & Timer");
+                ui.selectable_value(&mut self.tab, Tab::Calculator, "Taschenrechner");
                 ui.selectable_value(&mut self.tab, Tab::Settings, "Einstellungen");
             });
             ui.add_space(3.0);
@@ -1592,6 +2021,7 @@ impl eframe::App for SnippetApp {
             match self.tab {
                 Tab::Snippets => self.ui_snippets(ui),
                 Tab::Clock => self.ui_clock(ui),
+                Tab::Calculator => self.ui_calculator(ui),
                 Tab::Settings => self.ui_settings(ui),
             }
 
