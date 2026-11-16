@@ -5,7 +5,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
@@ -161,6 +162,7 @@ struct Config {
     autostart: bool,
     start_in_background: bool,
     close_behavior: CloseBehavior,
+    timer_message: bool,
     palette_dark: Palette,
     palette_light: Palette,
 }
@@ -174,6 +176,7 @@ impl Default for Config {
             autostart: false,
             start_in_background: false,
             close_behavior: CloseBehavior::Ask,
+            timer_message: true,
             palette_dark: Palette::dark(),
             palette_light: Palette::light(),
         }
@@ -1717,9 +1720,13 @@ struct SnippetApp {
     copied: Option<(usize, Instant)>,
     confirm_delete_all: bool,
     show_close_dialog: bool,
+    show_timer_notification: bool,
     remember_close_choice: bool,
     status: Option<String>,
     countdown: Countdown,
+    countdown_generation: Arc<AtomicU64>,
+    timer_notification_pending: Arc<AtomicBool>,
+    timer_message_enabled: Arc<AtomicBool>,
     stopwatch: Stopwatch,
     calc: Calculator,
     palette_dirty: bool,
@@ -1767,6 +1774,8 @@ impl SnippetApp {
                 }
             };
 
+        let timer_message_enabled = Arc::new(AtomicBool::new(cfg.timer_message));
+
         Self {
             cfg,
             path,
@@ -1778,9 +1787,13 @@ impl SnippetApp {
             copied: None,
             confirm_delete_all: false,
             show_close_dialog: false,
+            show_timer_notification: false,
             remember_close_choice: true,
             status,
             countdown: Countdown::new(),
+            countdown_generation: Arc::new(AtomicU64::new(0)),
+            timer_notification_pending: Arc::new(AtomicBool::new(false)),
+            timer_message_enabled,
             stopwatch: Stopwatch::default(),
             calc: Calculator::new(),
             palette_dirty: false,
@@ -2288,6 +2301,49 @@ impl SnippetApp {
         self.show_close_dialog = false;
     }
 
+    fn start_countdown(&mut self, remaining: Duration, ctx: egui::Context) {
+        self.countdown.state = CountdownState::Running(Instant::now() + remaining);
+        let generation = self
+            .countdown_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        let current_generation = Arc::clone(&self.countdown_generation);
+        let notification_pending = Arc::clone(&self.timer_notification_pending);
+        let message_enabled = Arc::clone(&self.timer_message_enabled);
+
+        std::thread::spawn(move || {
+            let end = Instant::now() + remaining;
+            loop {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let time_left = end.saturating_duration_since(Instant::now());
+                if time_left.is_zero() {
+                    break;
+                }
+                std::thread::sleep(time_left.min(Duration::from_millis(250)));
+            }
+
+            if current_generation
+                .compare_exchange(
+                    generation,
+                    generation.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+                && message_enabled.load(Ordering::SeqCst)
+            {
+                notification_pending.store(true, Ordering::SeqCst);
+                show_window(&ctx);
+            }
+        });
+    }
+
+    fn cancel_countdown_notification(&self) {
+        self.countdown_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Abfrage, ob das Programm beendet oder in den Tray minimiert werden soll.
     fn ui_close_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_close_dialog {
@@ -2350,6 +2406,28 @@ impl SnippetApp {
         }
     }
 
+    fn ui_timer_notification(&mut self, ctx: &egui::Context) {
+        if !self.show_timer_notification {
+            return;
+        }
+
+        let mut open = self.show_timer_notification;
+        let mut close_requested = false;
+        egui::Window::new("Timer abgelaufen")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Der Countdown ist abgelaufen.");
+                ui.add_space(6.0);
+                if ui.button("Schließen").clicked() {
+                    close_requested = true;
+                }
+            });
+        self.show_timer_notification = open && !close_requested;
+    }
+
     // ----- Tab: Uhr & Timer -------------------------------------------------
 
     /// Erkennt einen abgelaufenen Countdown und plant das nächste Neuzeichnen.
@@ -2359,10 +2437,10 @@ impl SnippetApp {
             let now = Instant::now();
             if now >= end {
                 self.countdown.state = CountdownState::Done;
-                // Blinkt in der Taskleiste, falls das Fenster nicht im Vordergrund ist.
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                    egui::UserAttentionType::Informational,
-                ));
+                if self.cfg.timer_message {
+                    self.show_timer_notification = true;
+                    show_window(ctx);
+                }
             } else {
                 ctx.request_repaint_after((end - now).min(Duration::from_millis(250)));
             }
@@ -2437,7 +2515,7 @@ impl SnippetApp {
                             .add_enabled(!total.is_zero(), egui::Button::new("Start"))
                             .clicked()
                         {
-                            self.countdown.state = CountdownState::Running(Instant::now() + total);
+                            self.start_countdown(total, ui.ctx().clone());
                         }
                     }
                     CountdownState::Running(end) => {
@@ -2450,9 +2528,11 @@ impl SnippetApp {
                         );
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Pause").clicked() {
+                                self.cancel_countdown_notification();
                                 self.countdown.state = CountdownState::Paused(remaining);
                             }
                             if ui.button("Zurücksetzen").clicked() {
+                                self.cancel_countdown_notification();
                                 self.countdown.state = CountdownState::Idle;
                             }
                         });
@@ -2466,10 +2546,10 @@ impl SnippetApp {
                         );
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Weiter").clicked() {
-                                self.countdown.state =
-                                    CountdownState::Running(Instant::now() + remaining);
+                                self.start_countdown(remaining, ui.ctx().clone());
                             }
                             if ui.button("Zurücksetzen").clicked() {
+                                self.cancel_countdown_notification();
                                 self.countdown.state = CountdownState::Idle;
                             }
                         });
@@ -2482,6 +2562,7 @@ impl SnippetApp {
                                 .size(size * 0.6),
                         );
                         if ui.button("OK").clicked() {
+                            self.cancel_countdown_notification();
                             self.countdown.state = CountdownState::Idle;
                         }
                     }
@@ -2744,6 +2825,19 @@ impl SnippetApp {
                 }
 
                 ui.add_space(10.0);
+                ui.heading("Timer");
+                let mut timer_message = self.cfg.timer_message;
+                if ui
+                    .checkbox(&mut timer_message, "Eigene Benachrichtigung bei Timerende")
+                    .changed()
+                {
+                    self.cfg.timer_message = timer_message;
+                    self.timer_message_enabled
+                        .store(timer_message, Ordering::SeqCst);
+                    self.save();
+                }
+
+                ui.add_space(10.0);
                 ui.heading("System");
                 let mut autostart = self.cfg.autostart;
                 if ui.checkbox(&mut autostart, "Mit Windows starten").changed() {
@@ -2828,6 +2922,13 @@ impl eframe::App for SnippetApp {
             }
         }
 
+        if self
+            .timer_notification_pending
+            .swap(false, Ordering::SeqCst)
+        {
+            self.show_timer_notification = true;
+        }
+
         // "Kopiert!"-Feedback nach 1 Sekunde zurücksetzen.
         if let Some((_, t)) = self.copied {
             let elapsed = t.elapsed();
@@ -2909,6 +3010,7 @@ impl eframe::App for SnippetApp {
         // Modale Dialoge (liegen über dem Hauptfenster).
         self.ui_edit_window(ctx);
         self.ui_close_dialog(ctx);
+        self.ui_timer_notification(ctx);
 
         // Dünner Rahmen um das randlose Fenster, damit es sich vom Hintergrund abhebt.
         let border = ctx.style().visuals.widgets.inactive.bg_stroke;
